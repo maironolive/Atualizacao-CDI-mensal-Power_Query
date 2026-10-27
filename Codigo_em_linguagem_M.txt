@@ -1,0 +1,89 @@
+let
+    Fonte = Web.Contents("https://www.melhorcambio.com/cdi"),
+    Html = Text.FromBinary(Fonte),
+
+    // quebra por <option
+    Blocos = Text.Split(Html, "<option"),
+    Options = List.Skip(Blocos, 1),
+
+    Dados =
+        List.Transform(Options, each
+            let
+                bloco = Text.Replace(_, "#(lf)", ""),
+
+                // MES (texto entre > e </option>)
+                mesInicio = Text.PositionOf(bloco, ">") + 1,
+                mesFim = Text.PositionOf(bloco, "</option>"),
+                mes = try Text.Middle(bloco, mesInicio, mesFim - mesInicio) otherwise null,
+
+                // VALUE (mais robusto: pega depois de value= até %)
+                posValue = Text.PositionOf(bloco, "value="),
+                subValue = if posValue = -1 then null else Text.Middle(bloco, posValue),
+
+                // extrai até %
+                valorTexto =
+                    if subValue <> null then
+                        let
+                            inicio = Text.PositionOf(subValue, "=") + 1,
+                            recorte = Text.Middle(subValue, inicio),
+                            fim = Text.PositionOf(recorte, "%")
+                        in
+                            if fim > 0 then Text.Start(recorte, fim) else null
+                    else null,
+
+                valorLimpo =
+                    if valorTexto <> null then
+                        Text.Trim(Text.Replace(valorTexto, """", ""))
+                    else null,
+
+                valorNumero =
+                    try Number.FromText(
+                        Text.Trim(Text.Replace(valorLimpo, ",", ".")),
+                        "en-US"
+                    )
+                    otherwise null
+            in
+                [Mes = mes, CDI = valorNumero]
+        ),
+
+    Tabela = Table.FromRecords(Dados),
+    // remove nulos reais
+    Filtrado = Table.SelectRows(Tabela, each [CDI] <> null and [Mes] <> null),
+
+    // limpa espaços invisíveis
+    Limpo = Table.TransformColumns(Filtrado, {
+        {"Mes", each Text.Trim(Text.From(_)), type text}
+    }),
+
+    /* filtro correto por ano via sufixo -YY */
+    Filtrado2015 =
+        Table.SelectRows(Limpo, each
+            let
+                txt = Text.Trim(Text.From([Mes])),
+                anoTexto = try Text.AfterDelimiter(txt, "-") otherwise null,
+                anoNum = try Number.FromText(anoTexto) otherwise null,
+
+                anoFinal =
+                    if anoNum = null then null
+                    else if anoNum <= 26 then 2000 + anoNum
+                    else if anoNum <= 99 then 1900 + anoNum
+                    else null
+            in
+                anoFinal <> null and anoFinal >= 2015
+        ),
+
+    TipoDados = 
+        Table.TransformColumnTypes(Filtrado2015,{{"Mes", type date}, {"CDI", type number}}),
+
+    //Colunas Nome do mes, ano e mesAno
+    ColunasCriadas = 
+        Table.AddColumn(
+            Table.AddColumn(
+                 Table.AddColumn(TipoDados, 
+                    "Mes_nome", each Date.MonthName([Mes]), type text),
+                    "Ano", each Date.Year([Mes]), Int64.Type),
+                    "MesAno", each Text.Combine({[Mes_nome], Text.From([Ano], "pt-BR")}, "-"), type text),
+
+    ColunasReordenadas = Table.ReorderColumns(ColunasCriadas,{"Ano", "Mes", "Mes_nome", "CDI"})
+in
+    ColunasReordenadas
